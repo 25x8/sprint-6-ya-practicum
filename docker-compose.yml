@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: accrual-db
+    restart: always
+    environment:
+      POSTGRES_USER: accrual_user
+      POSTGRES_PASSWORD: accrual_password
+      POSTGRES_DB: accrual_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
