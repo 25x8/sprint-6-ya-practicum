@@ -3,7 +3,6 @@ package accrual
 import (
 	"context"
 	"database/sql"
-	"errors"
 )
 
 type Order struct {
@@ -25,6 +24,7 @@ type GoodsReward struct {
 
 type Repository interface {
 	GetOrder(ctx context.Context, orderNumber string) (*Order, error)
+	GetGoodsReward(ctx context.Context, match string) (*GoodsReward, error)
 	CreateOrder(ctx context.Context, order *Order, goods []OrderGoods) error
 	AddGoodsReward(ctx context.Context, reward *GoodsReward) error
 }
@@ -45,7 +45,7 @@ func (r *PostgresRepository) GetOrder(ctx context.Context, orderNumber string) (
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, errors.New("order not found")
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -82,4 +82,11 @@ func (r *PostgresRepository) AddGoodsReward(ctx context.Context, reward *GoodsRe
 	query := `INSERT INTO goods_rewards (match, reward, reward_type) VALUES ($1, $2, $3)`
 	_, err := r.db.ExecContext(ctx, query, reward.Match, reward.Reward, reward.RewardType)
 	return err
+}
+
+func (r *PostgresRepository) GetGoodsReward(ctx context.Context, match string) (*GoodsReward, error) {
+	query := `SELECT match, reward, reward_type FROM goods_rewards WHERE match = $1`
+	var reward GoodsReward
+	err := r.db.QueryRowContext(ctx, query, match).Scan(&reward.Match, &reward.Reward, &reward.RewardType)
+	return &reward, err
 }
