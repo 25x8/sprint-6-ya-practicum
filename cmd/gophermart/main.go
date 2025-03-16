@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,14 +40,34 @@ func main() {
 
 	// Проверяем переменные окружения
 	if envRunAddr := os.Getenv("RUN_ADDRESS"); envRunAddr != "" {
+		log.Printf("Using RUN_ADDRESS from environment: %s", envRunAddr)
 		runAddr = envRunAddr
 	}
 	if envDatabaseURI := os.Getenv("DATABASE_URI"); envDatabaseURI != "" {
+		log.Printf("Using DATABASE_URI from environment")
 		databaseURI = envDatabaseURI
 	}
 	if envAccrualAddr := os.Getenv("ACCRUAL_SYSTEM_ADDRESS"); envAccrualAddr != "" {
+		log.Printf("Using ACCRUAL_SYSTEM_ADDRESS from environment: %s", envAccrualAddr)
 		accrualAddr = envAccrualAddr
 	}
+
+	log.Printf("Using runAddr: %s", runAddr)
+	log.Printf("Using accrualAddr: %s", accrualAddr)
+
+	// Убедимся, что адрес имеет правильный формат
+	if !strings.Contains(runAddr, ":") {
+		log.Printf("Warning: runAddr does not contain port separator ':', adding default port (:8080)")
+		runAddr = runAddr + ":8080"
+	}
+
+	// Если адрес содержит только порт (например, :8080), добавим localhost
+	if runAddr[0] == ':' {
+		log.Printf("Warning: runAddr starts with ':', assuming localhost")
+		runAddr = "localhost" + runAddr
+	}
+
+	log.Printf("Final server address: %s", runAddr)
 
 	// Проверяем обязательные параметры
 	if databaseURI == "" {
