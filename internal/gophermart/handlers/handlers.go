@@ -1,19 +1,19 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/accrual"
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/auth"
-	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/middleware"
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/models"
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/repository"
 	"github.com/gorilla/mux"
@@ -24,39 +24,42 @@ const (
 	CookieName = "auth_token"
 )
 
+// Константа для ключа userID в контексте
+const userIDKey = "userID"
+
 // Handler представляет обработчики для API
 type Handler struct {
 	repo          repository.Repository
 	auth          *auth.Auth
 	accrualClient *accrual.Client
+	logger        *slog.Logger
 }
 
 // NewHandler создает новый экземпляр Handler
-func NewHandler(repo repository.Repository, auth *auth.Auth, accrualClient *accrual.Client) *Handler {
+func NewHandler(repo repository.Repository, auth *auth.Auth, accrualClient *accrual.Client, logger *slog.Logger) *Handler {
 	return &Handler{
 		repo:          repo,
 		auth:          auth,
 		accrualClient: accrualClient,
+		logger:        logger,
 	}
 }
 
 // RegisterRoutes регистрирует маршруты для API
 func (h *Handler) RegisterRoutes(router *mux.Router) {
-	// Создаем middleware для аутентификации
-	authMiddleware := middleware.NewAuthMiddleware(h.auth)
-
 	// Регистрируем маршруты без аутентификации
 	router.HandleFunc("/api/user/register", h.Register).Methods("POST")
 	router.HandleFunc("/api/user/login", h.Login).Methods("POST")
 
 	// Создаем подмаршрутизатор с middleware для аутентификации
 	protected := router.PathPrefix("").Subrouter()
-	protected.Use(authMiddleware.Middleware)
+	protected.Use(h.auth.AuthMiddleware)
 
 	// Регистрируем защищенные маршруты
 	protected.HandleFunc("/api/user/orders", h.GetOrders).Methods("GET")
 	protected.HandleFunc("/api/user/orders", h.CreateOrder).Methods("POST")
 	protected.HandleFunc("/api/user/balance", h.GetBalance).Methods("GET")
+	protected.HandleFunc("/api/user/balance/add", h.AddBalance).Methods("POST")
 	protected.HandleFunc("/api/user/balance/withdraw", h.Withdraw).Methods("POST")
 	protected.HandleFunc("/api/user/withdrawals", h.GetWithdrawals).Methods("GET")
 }
@@ -148,7 +151,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 // GetOrders обрабатывает запрос на получение списка заказов пользователя
 func (h *Handler) GetOrders(w http.ResponseWriter, r *http.Request) {
 	// Получаем ID пользователя из контекста
-	userID, ok := middleware.GetUserID(r.Context())
+	userID, ok := auth.GetUserIDFromContext(r.Context())
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -176,7 +179,7 @@ func (h *Handler) GetOrders(w http.ResponseWriter, r *http.Request) {
 // CreateOrder обрабатывает запрос на создание заказа
 func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	// Получаем ID пользователя из контекста
-	userID, ok := middleware.GetUserID(r.Context())
+	userID, ok := auth.GetUserIDFromContext(r.Context())
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -238,203 +241,31 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Запускаем горутину для проверки заказа в системе accrual
-	go h.checkOrderStatus(orderNumber)
-
+	// Отправляем ответ
 	w.WriteHeader(http.StatusAccepted)
-}
-
-// GetBalance обрабатывает запрос на получение баланса пользователя
-func (h *Handler) GetBalance(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID пользователя из контекста
-	userID, ok := middleware.GetUserID(r.Context())
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Получаем баланс пользователя
-	balance, err := h.repo.GetUserBalance(r.Context(), userID)
-	if err != nil {
-		log.Printf("Failed to get balance: %v", err)
-		http.Error(w, "Failed to get balance", http.StatusInternalServerError)
-		return
-	}
-
-	// Отправляем ответ
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(balance)
-}
-
-// Withdraw обрабатывает запрос на списание баллов
-func (h *Handler) Withdraw(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID пользователя из контекста
-	userID, ok := middleware.GetUserID(r.Context())
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Декодируем запрос
-	var req models.WithdrawRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// Проверяем номер заказа и сумму
-	if req.Order == "" || req.Sum <= 0 {
-		http.Error(w, "Order number and sum are required", http.StatusBadRequest)
-		return
-	}
-
-	// Проверяем номер заказа по алгоритму Луна
-	if !validateLuhn(req.Order) {
-		http.Error(w, "Invalid order number format", http.StatusUnprocessableEntity)
-		return
-	}
-
-	// Списываем баллы
-	err := h.repo.CreateWithdrawal(r.Context(), userID, req.Order, req.Sum)
-	if err != nil {
-		if errors.Is(err, repository.ErrInsufficientFunds) {
-			http.Error(w, "Insufficient funds", http.StatusPaymentRequired)
-			return
-		}
-		log.Printf("Failed to withdraw: %v", err)
-		http.Error(w, "Failed to withdraw", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-// GetWithdrawals обрабатывает запрос на получение списка операций списания
-func (h *Handler) GetWithdrawals(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID пользователя из контекста
-	userID, ok := middleware.GetUserID(r.Context())
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Получаем список операций списания
-	withdrawals, err := h.repo.GetWithdrawalsByUserID(r.Context(), userID)
-	if err != nil {
-		log.Printf("Failed to get withdrawals: %v", err)
-		http.Error(w, "Failed to get withdrawals", http.StatusInternalServerError)
-		return
-	}
-
-	// Если операций нет, возвращаем 204 No Content
-	if len(withdrawals) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	// Отправляем ответ
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(withdrawals)
-}
-
-// checkOrderStatus проверяет статус заказа в системе accrual
-func (h *Handler) checkOrderStatus(orderNumber string) {
-	// Создаем контекст с таймаутом
-	ctx := context.Background()
-
-	// Периодически проверяем статус заказа
-	for {
-		// Получаем информацию о заказе из системы accrual
-		orderInfo, err := h.accrualClient.GetOrder(orderNumber)
-		if err != nil {
-			// Если ошибка связана с ограничением запросов, ждем указанное время
-			if strings.Contains(err.Error(), "too many requests") {
-				// Извлекаем время ожидания из сообщения об ошибке
-				var waitTime int
-				_, err := fmt.Sscanf(err.Error(), "too many requests, retry after %d seconds", &waitTime)
-				if err != nil || waitTime <= 0 {
-					waitTime = 60 // По умолчанию ждем 60 секунд
-				}
-				log.Printf("Rate limit exceeded, waiting %d seconds before retry", waitTime)
-				time.Sleep(time.Duration(waitTime) * time.Second)
-				continue
-			}
-
-			log.Printf("Failed to get order info: %v", err)
-			time.Sleep(time.Second * 5)
-			continue
-		}
-
-		// Если заказ не найден, продолжаем проверку
-		if orderInfo == nil {
-			time.Sleep(time.Second * 5)
-			continue
-		}
-
-		// Обновляем статус заказа
-		err = h.repo.UpdateOrderStatus(ctx, orderNumber, orderInfo.Status, orderInfo.Accrual)
-		if err != nil {
-			log.Printf("Failed to update order status: %v", err)
-			time.Sleep(time.Second * 5)
-			continue
-		}
-
-		// Если статус PROCESSED, начисляем баллы пользователю
-		if orderInfo.Status == models.StatusProcessed {
-			// Получаем заказ из базы данных
-			order, err := h.repo.GetOrderByNumber(ctx, orderNumber)
-			if err != nil {
-				log.Printf("Failed to get order: %v", err)
-				break
-			}
-
-			// Начисляем баллы пользователю
-			err = h.repo.UpdateUserBalance(ctx, order.UserID, orderInfo.Accrual, 0)
-			if err != nil {
-				log.Printf("Failed to update user balance: %v", err)
-				break
-			}
-
-			// Завершаем проверку
-			break
-		}
-
-		// Если статус INVALID, завершаем проверку
-		if orderInfo.Status == models.StatusInvalid {
-			break
-		}
-
-		// Ждем перед следующей проверкой
-		time.Sleep(time.Second * 5)
-	}
 }
 
 // validateLuhn проверяет номер заказа по алгоритму Луна
 func validateLuhn(number string) bool {
-	// Проверяем, что номер состоит только из цифр
+	// Проверяем, что номер содержит только цифры
 	for _, r := range number {
 		if r < '0' || r > '9' {
 			return false
 		}
 	}
 
-	// Алгоритм Луна
+	// Реализация алгоритма Луна
 	sum := 0
-	numDigits := len(number)
-	parity := numDigits % 2
-
-	for i := 0; i < numDigits; i++ {
-		digit := int(number[i] - '0')
-
+	parity := len(number) % 2
+	for i, digit := range number {
+		n, _ := strconv.Atoi(string(digit))
 		if i%2 == parity {
-			digit *= 2
-			if digit > 9 {
-				digit -= 9
+			n *= 2
+			if n > 9 {
+				n -= 9
 			}
 		}
-
-		sum += digit
+		sum += n
 	}
-
 	return sum%10 == 0
 }

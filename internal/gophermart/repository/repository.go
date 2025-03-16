@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/models"
@@ -28,6 +29,9 @@ type Repository interface {
 
 	// Метод для проверки баланса пользователя
 	GetUserBalance(ctx context.Context, userID int) (*models.Balance, error)
+
+	// Метод для добавления баланса пользователю
+	AddBalanceToUser(ctx context.Context, userID int, amount float64) error
 }
 
 // PostgresRepository реализует интерфейс Repository для PostgreSQL
@@ -143,8 +147,11 @@ func (r *PostgresRepository) UpdateOrderStatus(ctx context.Context, orderNumber,
 
 // CreateWithdrawal создает новую операцию вывода средств
 func (r *PostgresRepository) CreateWithdrawal(ctx context.Context, userID int, orderNumber string, sum float64) error {
+	fmt.Printf("CreateWithdrawal: userID=%d, orderNumber=%s, sum=%f\n", userID, orderNumber, sum)
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		fmt.Printf("Error beginning transaction: %v\n", err)
 		return err
 	}
 
@@ -153,11 +160,15 @@ func (r *PostgresRepository) CreateWithdrawal(ctx context.Context, userID int, o
 	err = tx.QueryRowContext(ctx, `SELECT balance FROM users WHERE id = $1`, userID).Scan(&balance)
 	if err != nil {
 		tx.Rollback()
+		fmt.Printf("Error getting balance: %v\n", err)
 		return err
 	}
 
+	fmt.Printf("User balance: %f, withdrawal sum: %f\n", balance, sum)
+
 	if balance < sum {
 		tx.Rollback()
+		fmt.Printf("Insufficient funds: balance=%f, sum=%f\n", balance, sum)
 		return ErrInsufficientFunds
 	}
 
@@ -165,6 +176,7 @@ func (r *PostgresRepository) CreateWithdrawal(ctx context.Context, userID int, o
 	_, err = tx.ExecContext(ctx, `UPDATE users SET balance = balance - $1, withdrawn = withdrawn + $1 WHERE id = $2`, sum, userID)
 	if err != nil {
 		tx.Rollback()
+		fmt.Printf("Error updating balance: %v\n", err)
 		return err
 	}
 
@@ -173,10 +185,18 @@ func (r *PostgresRepository) CreateWithdrawal(ctx context.Context, userID int, o
 		userID, orderNumber, sum, time.Now())
 	if err != nil {
 		tx.Rollback()
+		fmt.Printf("Error inserting withdrawal: %v\n", err)
 		return err
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+	if err != nil {
+		fmt.Printf("Error committing transaction: %v\n", err)
+		return err
+	}
+
+	fmt.Printf("Withdrawal created successfully\n")
+	return nil
 }
 
 // GetWithdrawalsByUserID возвращает все операции вывода средств пользователя
@@ -213,4 +233,19 @@ func (r *PostgresRepository) GetUserBalance(ctx context.Context, userID int) (*m
 		return nil, err
 	}
 	return &balance, nil
+}
+
+// AddBalanceToUser добавляет указанную сумму к балансу пользователя
+func (r *PostgresRepository) AddBalanceToUser(ctx context.Context, userID int, amount float64) error {
+	if amount <= 0 {
+		return fmt.Errorf("amount must be positive")
+	}
+
+	query := `UPDATE users SET balance = balance + $1 WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, amount, userID)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

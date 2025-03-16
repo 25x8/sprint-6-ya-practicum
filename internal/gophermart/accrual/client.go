@@ -7,60 +7,62 @@ import (
 	"time"
 )
 
-// OrderResponse представляет ответ от системы accrual
-type OrderResponse struct {
-	Order   string  `json:"order"`
-	Status  string  `json:"status"`
-	Accrual float64 `json:"accrual,omitempty"`
-}
-
-// Client представляет клиент для взаимодействия с системой accrual
+// Client представляет клиент для работы с API системы начисления баллов
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-// NewClient создает новый экземпляр Client
-func NewClient(baseURL string, timeout time.Duration) *Client {
+// OrderStatus представляет статус обработки заказа
+type OrderStatus string
+
+const (
+	StatusNew        OrderStatus = "NEW"
+	StatusProcessing OrderStatus = "PROCESSING"
+	StatusInvalid    OrderStatus = "INVALID"
+	StatusProcessed  OrderStatus = "PROCESSED"
+)
+
+// Order представляет информацию о заказе, полученную от системы начисления баллов
+type Order struct {
+	Number  string      `json:"order"`
+	Status  OrderStatus `json:"status"`
+	Accrual float64     `json:"accrual,omitempty"`
+}
+
+// NewClient создает новый экземпляр клиента
+func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout: 5 * time.Second,
 		},
 	}
 }
 
-// GetOrder получает информацию о заказе из системы accrual
-func (c *Client) GetOrder(orderNumber string) (*OrderResponse, error) {
-	// Формируем URL
+// GetOrder получает информацию о заказе от системы начисления баллов
+func (c *Client) GetOrder(orderNumber string) (*Order, error) {
 	url := fmt.Sprintf("%s/api/orders/%s", c.baseURL, orderNumber)
 
-	// Отправляем запрос
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get order from accrual system: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Проверяем статус ответа
+	// Если заказ не найден или еще не обработан
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
 
-	// Если статус 429 (Too Many Requests), возвращаем ошибку с информацией о необходимости повторить запрос позже
-	if resp.StatusCode == http.StatusTooManyRequests {
-		retryAfter := resp.Header.Get("Retry-After")
-		return nil, fmt.Errorf("too many requests, retry after %s seconds", retryAfter)
-	}
-
+	// Если произошла ошибка на сервере
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("accrual system returned status code %d", resp.StatusCode)
 	}
 
-	// Декодируем ответ
-	var order OrderResponse
+	var order Order
 	if err := json.NewDecoder(resp.Body).Decode(&order); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return &order, nil

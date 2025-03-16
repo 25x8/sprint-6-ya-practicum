@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -68,11 +69,14 @@ func main() {
 	// Создаем сервис аутентификации
 	authService := auth.NewAuth(repo, signingKey, tokenTTL)
 
+	// Создаем логгер
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
 	// Создаем клиент для системы accrual
-	accrualClient := accrual.NewClient(accrualAddr, accrualTimeout)
+	accrualClient := accrual.NewClient(accrualAddr)
 
 	// Создаем обработчики
-	handler := handlers.NewHandler(repo, authService, accrualClient)
+	handler := handlers.NewHandler(repo, authService, accrualClient, logger)
 
 	// Создаем маршрутизатор
 	router := mux.NewRouter()
