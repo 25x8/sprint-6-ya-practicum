@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS mechanics;
+DROP TABLE IF EXISTS goods_rewards;
+DROP TABLE IF EXISTS order_goods; 
+DROP TABLE IF EXISTS orders;
