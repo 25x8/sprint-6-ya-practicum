@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	config "github.com/25x8/sprint-6-ya-practicum/internal"
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/accrual"
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/auth"
 	"github.com/25x8/sprint-6-ya-practicum/internal/gophermart/handlers"
@@ -20,6 +22,12 @@ import (
 )
 
 func main() {
+	// Загружаем конфигурацию
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Printf("Warning: could not load config file: %v", err)
+	}
+
 	// Парсим флаги командной строки
 	var (
 		runAddr        string
@@ -43,13 +51,31 @@ func main() {
 		log.Printf("Using RUN_ADDRESS from environment: %s", envRunAddr)
 		runAddr = envRunAddr
 	}
+
 	if envDatabaseURI := os.Getenv("DATABASE_URI"); envDatabaseURI != "" {
 		log.Printf("Using DATABASE_URI from environment")
 		databaseURI = envDatabaseURI
+	} else if databaseURI == "" && cfg != nil {
+		// Если URI базы данных не указан ни через флаг, ни через переменную окружения,
+		// используем значение из конфигурации
+		databaseURI = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+			cfg.GophermartDBUser,
+			cfg.GophermartDBPassword,
+			cfg.GophermartDBHost,
+			cfg.GophermartDBPort,
+			cfg.GophermartDBName,
+			cfg.GophermartDBSSLMode)
+		log.Printf("Using database URI from config")
 	}
+
 	if envAccrualAddr := os.Getenv("ACCRUAL_SYSTEM_ADDRESS"); envAccrualAddr != "" {
 		log.Printf("Using ACCRUAL_SYSTEM_ADDRESS from environment: %s", envAccrualAddr)
 		accrualAddr = envAccrualAddr
+	} else if accrualAddr == "" && cfg != nil {
+		// Если адрес accrual системы не указан ни через флаг, ни через переменную окружения,
+		// используем значение из конфигурации
+		accrualAddr = cfg.AccrualSystemAddress
+		log.Printf("Using accrual system address from config: %s", accrualAddr)
 	}
 
 	log.Printf("Using runAddr: %s", runAddr)

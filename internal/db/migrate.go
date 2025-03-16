@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -8,87 +9,109 @@ import (
 	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/golang-migrate/migrate/v4/source/github"
 )
 
 // ApplyMigrations применяет миграции к базе данных
 func ApplyMigrations(databaseURI string) error {
-	// Определяем, какой сервис запускается (accrual или gophermart)
-	// по названию исполняемого файла
-	executable, err := os.Executable()
+	// Определяем тип сервиса по имени исполняемого файла
+	exe, err := os.Executable()
 	if err != nil {
-		log.Printf("Warning: Cannot determine executable name: %v, using default migrations", err)
-		executable = ""
+		return fmt.Errorf("failed to get executable path: %w", err)
 	}
+	exeName := filepath.Base(exe)
+	log.Printf("Executable name: %s", exeName)
 
-	execName := filepath.Base(executable)
-	log.Printf("Executable name: %s", execName)
-
-	migrationType := "gophermart" // по умолчанию
-	if strings.Contains(strings.ToLower(execName), "accrual") {
+	// Определяем тип миграций на основе имени исполняемого файла
+	var migrationType string
+	if strings.Contains(exeName, "accrual") {
 		migrationType = "accrual"
+	} else {
+		migrationType = "gophermart"
 	}
-
 	log.Printf("Using migration type: %s", migrationType)
 
-	// Ищем миграции в нескольких возможных местах
-	possiblePaths := []string{
-		"./migrations/" + migrationType,
-		"../migrations/" + migrationType,
-		"../../migrations/" + migrationType,
-		"./cmd/" + migrationType + "/migrations",
+	// Пытаемся обновить ограничение CHECK для поля status в таблице orders,
+	// если это сервис accrual
+	if migrationType == "accrual" {
+		db, err := sql.Open("postgres", databaseURI)
+		if err != nil {
+			return fmt.Errorf("failed to connect to database: %w", err)
+		}
+		defer db.Close()
+
+		_, err = db.Exec(`
+			DO $$
+			BEGIN
+				ALTER TABLE IF EXISTS orders 
+				DROP CONSTRAINT IF EXISTS orders_status_check;
+				
+				ALTER TABLE IF EXISTS orders 
+				ADD CONSTRAINT orders_status_check 
+				CHECK (status IN ('NEW', 'REGISTERED', 'INVALID', 'PROCESSING', 'PROCESSED'));
+			EXCEPTION WHEN others THEN
+				-- Игнорируем ошибки, если таблица еще не существует
+				NULL;
+			END $$;
+		`)
+		if err != nil {
+			log.Printf("Warning: could not update CHECK constraint: %v", err)
+		}
+	}
+
+	// Ищем директорию с миграциями
+	migrationsDirs := []string{
+		fmt.Sprintf("migrations/%s", migrationType),
+		fmt.Sprintf("../migrations/%s", migrationType),
+		fmt.Sprintf("../../migrations/%s", migrationType),
 	}
 
 	var migrationsPath string
-	for _, path := range possiblePaths {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			absPath, _ := filepath.Abs(path)
-			migrationsPath = "file://" + absPath
+	for _, dir := range migrationsDirs {
+		if _, err := os.Stat(dir); err == nil {
+			absPath, err := filepath.Abs(dir)
+			if err != nil {
+				return fmt.Errorf("failed to get absolute path for %s: %w", dir, err)
+			}
+			migrationsPath = fmt.Sprintf("file://%s", absPath)
 			log.Printf("Using migrations from: %s", absPath)
 			break
 		}
 	}
 
 	if migrationsPath == "" {
-		log.Println("Warning: Specialized migrations directory not found, trying default migrations")
-		// Пробуем основную директорию миграций
-		defaultPaths := []string{
-			"./migrations",
-			"../migrations",
-			"../../migrations",
-		}
-
-		for _, path := range defaultPaths {
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				absPath, _ := filepath.Abs(path)
-				migrationsPath = "file://" + absPath
-				log.Printf("Using default migrations from: %s", absPath)
-				break
-			}
-		}
-	}
-
-	if migrationsPath == "" {
-		log.Println("Warning: Migrations directory not found, using fallback path")
-		migrationsPath = "file://migrations"
+		return fmt.Errorf("migrations directory not found")
 	}
 
 	log.Printf("Migration path: %s", migrationsPath)
 	log.Printf("Database URI: %s", databaseURI)
 
-	m, err := migrate.New(
-		migrationsPath,
-		databaseURI,
-	)
-
+	m, err := migrate.New(migrationsPath, databaseURI)
 	if err != nil {
-		return fmt.Errorf("migration initialization failed: %v", err)
+		// Альтернативный подход с использованием WithInstance
+		db, err := sql.Open("postgres", databaseURI)
+		if err != nil {
+			return fmt.Errorf("failed to connect to database for migration: %w", err)
+		}
+		defer db.Close()
+
+		driver, err := postgres.WithInstance(db, &postgres.Config{})
+		if err != nil {
+			return fmt.Errorf("failed to create postgres driver: %w", err)
+		}
+
+		m, err = migrate.NewWithDatabaseInstance(
+			migrationsPath,
+			"postgres", driver)
+		if err != nil {
+			return fmt.Errorf("failed to create migration instance: %w", err)
+		}
 	}
 
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		return fmt.Errorf("migration failed: %v", err)
+		return fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
 	log.Println("Migration applied successfully!")

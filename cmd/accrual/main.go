@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,12 +12,19 @@ import (
 	"syscall"
 	"time"
 
+	config "github.com/25x8/sprint-6-ya-practicum/internal"
 	"github.com/25x8/sprint-6-ya-practicum/internal/accrual"
 	"github.com/25x8/sprint-6-ya-practicum/internal/db"
 	"github.com/gorilla/mux"
 )
 
 func main() {
+	// Загружаем конфигурацию
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Printf("Warning: could not load config file: %v", err)
+	}
+
 	// Парсим флаги командной строки
 	var (
 		runAddr     string
@@ -31,10 +39,25 @@ func main() {
 	if envRunAddr := os.Getenv("RUN_ADDRESS"); envRunAddr != "" {
 		log.Printf("Using RUN_ADDRESS from environment: %s", envRunAddr)
 		runAddr = envRunAddr
+	} else if envRunAddrAccrual := os.Getenv("RUN_ADDRESS_ACCRUAL"); envRunAddrAccrual != "" {
+		log.Printf("Using RUN_ADDRESS_ACCRUAL from environment: %s", envRunAddrAccrual)
+		runAddr = envRunAddrAccrual
 	}
+
 	if envDatabaseURI := os.Getenv("DATABASE_URI"); envDatabaseURI != "" {
 		log.Printf("Using DATABASE_URI from environment")
 		databaseURI = envDatabaseURI
+	} else if databaseURI == "" && cfg != nil {
+		// Если URI базы данных не указан ни через флаг, ни через переменную окружения,
+		// используем значение из конфигурации
+		databaseURI = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+			cfg.AccrualDBUser,
+			cfg.AccrualDBPassword,
+			cfg.AccrualDBHost,
+			cfg.AccrualDBPort,
+			cfg.AccrualDBName,
+			cfg.AccrualDBSSLMode)
+		log.Printf("Using database URI from config")
 	}
 
 	log.Printf("Final runAddr value: %s", runAddr)
