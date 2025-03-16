@@ -1,3 +1,4 @@
-DROP TABLE order_goods;
-DROP TABLE orders;
-DROP TABLE goods_rewards;
+DROP TABLE IF EXISTS mechanics;
+DROP TABLE IF EXISTS goods_rewards;
+DROP TABLE IF EXISTS order_goods; 
+DROP TABLE IF EXISTS orders;

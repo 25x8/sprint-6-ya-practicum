@@ -1,21 +1,30 @@
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
-    order_number VARCHAR(50) UNIQUE NOT NULL,
-    status VARCHAR(20) NOT NULL CHECK (status IN ('REGISTERED', 'INVALID', 'PROCESSING', 'PROCESSED')),
-    accrual DECIMAL(10, 2) DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    number VARCHAR(255) NOT NULL UNIQUE,
+    status VARCHAR(20) NOT NULL,
+    accrual NUMERIC(10, 2),
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE order_goods (
+CREATE TABLE IF NOT EXISTS order_goods (
     id SERIAL PRIMARY KEY,
-    order_id INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    order_id INTEGER REFERENCES orders(id),
     description TEXT NOT NULL,
-    price DECIMAL(10, 2) NOT NULL
+    price NUMERIC(10, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE goods_rewards (
+CREATE TABLE IF NOT EXISTS goods_rewards (
     id SERIAL PRIMARY KEY,
-    match TEXT NOT NULL,
-    reward DECIMAL(10, 2) NOT NULL,
-    reward_type VARCHAR(10) NOT NULL CHECK (reward_type IN ('%', 'pt'))
+    match_pattern TEXT NOT NULL,
+    reward_type TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS mechanics (
+    id SERIAL PRIMARY KEY,
+    order_number VARCHAR(255) NOT NULL UNIQUE,
+    accrual_type VARCHAR(50) NOT NULL,
+    accrual_value NUMERIC(10, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
 );
