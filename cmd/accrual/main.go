@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -16,15 +16,39 @@ import (
 )
 
 func main() {
-	if err := db.ApplyMigrations(); err != nil {
+	// Парсим флаги командной строки
+	var (
+		runAddr     string
+		databaseURI string
+	)
+
+	flag.StringVar(&runAddr, "a", ":8080", "address and port to run server")
+	flag.StringVar(&databaseURI, "d", "", "database URI")
+	flag.Parse()
+
+	// Проверяем переменные окружения
+	if envRunAddr := os.Getenv("RUN_ADDRESS"); envRunAddr != "" {
+		runAddr = envRunAddr
+	}
+	if envDatabaseURI := os.Getenv("DATABASE_URI"); envDatabaseURI != "" {
+		databaseURI = envDatabaseURI
+	}
+
+	// Проверяем обязательные параметры
+	if databaseURI == "" {
+		log.Fatal("Database URI is required")
+	}
+
+	// Применяем миграции
+	if err := db.ApplyMigrations(databaseURI); err != nil {
 		log.Fatalf("Migration error: %v", err)
 	}
 
-	database, err := db.InitDB()
+	// Инициализируем базу данных
+	database, err := db.InitDB(databaseURI)
 	if err != nil {
 		log.Fatalf("Database connection error: %v", err)
 	}
-
 	defer db.CloseDB()
 
 	repo := accrual.NewPostgresRepository(database)
@@ -36,15 +60,9 @@ func main() {
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	addr := fmt.Sprintf(":%s", port)
-
 	// Создаем HTTP-сервер
 	server := &http.Server{
-		Addr:    addr,
+		Addr:    runAddr,
 		Handler: router,
 	}
 
@@ -54,7 +72,7 @@ func main() {
 
 	// Запускаем сервер в отдельной горутине
 	go func() {
-		log.Printf("Starting server on %s", addr)
+		log.Printf("Starting server on %s", runAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
